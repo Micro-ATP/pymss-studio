@@ -24,6 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout pymss core
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss
+          path: pymss-core
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.2
@@ -32,7 +38,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: pymss-desktop/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,33 +50,33 @@ jobs:
         run: choco install innosetup --no-progress -y
 
       - name: Install frontend dependencies
-        working-directory: pymss-desktop
+        working-directory: .
         run: pnpm install --frozen-lockfile
 
       - name: Prepare embedded CUDA Python runtime
-        working-directory: pymss-desktop
+        working-directory: .
         shell: pwsh
         run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchIndexUrl $env:TORCH_INDEX_URL
 
       - name: Build frontend
-        working-directory: pymss-desktop
+        working-directory: .
         run: pnpm build
 
       - name: Build Tauri app directory
-        working-directory: pymss-desktop/src-tauri
+        working-directory: src-tauri
         run: cargo build --release
 
       - name: Stage portable directory
         shell: pwsh
         run: |
           $version = '${{ env.PYMSS_VERSION }}'.TrimStart('v')
-          $stage = "pymss-desktop/release/Pymss-Studio-$version-windows-x64-cuda"
+          $stage = "release/Pymss-Studio-$version-windows-x64-cuda"
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item "pymss-desktop/src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
-          Copy-Item "pymss-desktop/python" "$stage/python" -Recurse
-          Copy-Item "pymss-desktop/python-runtime" "$stage/python-runtime" -Recurse
-          Copy-Item "pymss" "$stage/pymss" -Recurse
+          Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
+          Copy-Item "python" "$stage/python" -Recurse
+          Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
+          Copy-Item "pymss-core" "$stage/pymss" -Recurse
           @"
           Pymss Studio $version Windows x64 CUDA
           Author: TheSmallHanCat
@@ -79,19 +85,34 @@ jobs:
           NVIDIA driver is required for GPU acceleration.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
           echo "PYMSS_PORTABLE_DIR=$stage" >> $env:GITHUB_ENV
-          echo "PYMSS_INSTALLER_OUTPUT=pymss-desktop/release" >> $env:GITHUB_ENV
+          echo "PYMSS_INSTALLER_OUTPUT=release" >> $env:GITHUB_ENV
           echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build Windows portable zip
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION }}'
+          $stage = "release/Pymss-Studio-$version-windows-x64-cuda"
+          $zip = "release/Pymss-Studio-$version-windows-x64-cuda.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
 
       - name: Build Inno Setup installer with LZMA
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "pymss-desktop\installer\pymss-studio.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup
-          path: pymss-desktop/release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup.exe
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup.exe
+
+      - name: Upload Windows portable zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-portable
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda.zip
 
   linux-cuda:
     name: Linux x64 CUDA tar.zst
@@ -102,6 +123,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout pymss core
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss
+          path: pymss-core
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.2
@@ -110,7 +137,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: pymss-desktop/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -124,31 +151,31 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf zstd
 
       - name: Install frontend dependencies
-        working-directory: pymss-desktop
+        working-directory: .
         run: pnpm install --frozen-lockfile
 
       - name: Prepare embedded CUDA Python runtime
-        working-directory: pymss-desktop
+        working-directory: .
         run: bash scripts/prepare-python-runtime.sh cuda
 
       - name: Build frontend
-        working-directory: pymss-desktop
+        working-directory: .
         run: pnpm build
 
       - name: Build Tauri binary
-        working-directory: pymss-desktop/src-tauri
+        working-directory: src-tauri
         run: cargo build --release
 
       - name: Stage Linux package
         run: |
           VERSION="${PYMSS_VERSION#v}"
-          STAGE="pymss-desktop/release/Pymss-Studio-${VERSION}-linux-x64-cuda"
+          STAGE="release/Pymss-Studio-${VERSION}-linux-x64-cuda"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
-          cp pymss-desktop/src-tauri/target/release/pymss-studio "$STAGE/Pymss Studio"
-          cp -R pymss-desktop/python "$STAGE/python"
-          cp -R pymss-desktop/python-runtime "$STAGE/python-runtime"
-          cp -R pymss "$STAGE/pymss"
+          cp src-tauri/target/release/pymss-studio "$STAGE/Pymss Studio"
+          cp -R python "$STAGE/python"
+          cp -R python-runtime "$STAGE/python-runtime"
+          cp -R pymss-core "$STAGE/pymss"
           cat > "$STAGE/README.txt" <<EOF
           Pymss Studio ${VERSION} Linux x64 CUDA
           Author: TheSmallHanCat
@@ -156,14 +183,14 @@ jobs:
           Run ./Pymss\ Studio after extracting.
           NVIDIA driver is required for GPU acceleration.
           EOF
-          tar --zstd -cf "pymss-desktop/release/Pymss-Studio-${VERSION}-linux-x64-cuda.tar.zst" -C "pymss-desktop/release" "Pymss-Studio-${VERSION}-linux-x64-cuda"
+          tar --zstd -cf "release/Pymss-Studio-${VERSION}-linux-x64-cuda.tar.zst" -C "release" "Pymss-Studio-${VERSION}-linux-x64-cuda"
           echo "PYMSS_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: Pymss-Studio-${{ env.PYMSS_VERSION }}-linux-x64-cuda
-          path: pymss-desktop/release/Pymss-Studio-${{ env.PYMSS_VERSION }}-linux-x64-cuda.tar.zst
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-linux-x64-cuda.tar.zst
 
   macos-gpu-dmg:
     name: macOS DMG bundled runtime / MPS-capable
@@ -181,6 +208,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout pymss core
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss
+          path: pymss-core
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.2
@@ -189,7 +222,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: pymss-desktop/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -198,25 +231,25 @@ jobs:
           python-version: "3.12"
 
       - name: Install frontend dependencies
-        working-directory: pymss-desktop
+        working-directory: .
         run: pnpm install --frozen-lockfile
 
       - name: Prepare embedded Python runtime with PyTorch MPS support
-        working-directory: pymss-desktop
+        working-directory: .
         env:
           TORCH_INDEX_URL: ""
         run: bash scripts/prepare-python-runtime.sh cuda
 
       - name: Copy clean resources for Tauri bundling
         run: |
-          mkdir -p pymss-desktop/src-tauri/resources
-          rm -rf pymss-desktop/src-tauri/resources/python-runtime pymss-desktop/src-tauri/resources/pymss
-          cp -R pymss-desktop/python-runtime pymss-desktop/src-tauri/resources/python-runtime
-          mkdir -p pymss-desktop/src-tauri/resources/pymss
-          rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss/ pymss-desktop/src-tauri/resources/pymss/
+          mkdir -p src-tauri/resources
+          rm -rf src-tauri/resources/python-runtime src-tauri/resources/pymss
+          cp -R python-runtime src-tauri/resources/python-runtime
+          mkdir -p src-tauri/resources/pymss
+          rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
 
       - name: Build Tauri DMG
-        working-directory: pymss-desktop
+        working-directory: .
         env:
           TAURI_CONFIG: '{"bundle":{"resources":["../python/*","resources/python-runtime","resources/pymss"]}}'
         run: pnpm tauri build --bundles dmg
@@ -224,16 +257,16 @@ jobs:
       - name: Rename DMG
         run: |
           VERSION="${PYMSS_VERSION#v}"
-          mkdir -p pymss-desktop/release
-          DMG=$(find pymss-desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' | head -n 1)
-          cp "$DMG" "pymss-desktop/release/Pymss-Studio-${VERSION}-macos-${{ matrix.arch }}-mps.dmg"
+          mkdir -p release
+          DMG=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' | head -n 1)
+          cp "$DMG" "release/Pymss-Studio-${VERSION}-macos-${{ matrix.arch }}-mps.dmg"
           echo "PYMSS_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: Pymss-Studio-${{ env.PYMSS_VERSION }}-macos-${{ matrix.arch }}-mps
-          path: pymss-desktop/release/Pymss-Studio-${{ env.PYMSS_VERSION }}-macos-${{ matrix.arch }}-mps.dmg
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-macos-${{ matrix.arch }}-mps.dmg
 
   github-release:
     name: Publish GitHub Release

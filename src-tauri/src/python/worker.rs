@@ -68,6 +68,7 @@ fn production_pymss_source_path(app: &AppHandle) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(resource) = app.path().resource_dir() {
         candidates.push(resource.join("pymss"));
+        candidates.push(resource.join("resources").join("pymss"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
@@ -102,6 +103,7 @@ fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
     let mut runtime_dirs = Vec::new();
     if let Ok(resource) = app.path().resource_dir() {
         runtime_dirs.push(resource.join("python-runtime"));
+        runtime_dirs.push(resource.join("resources").join("python-runtime"));
     }
     let exe_dir = std::env::current_exe()?
         .parent()

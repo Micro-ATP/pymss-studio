@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Frontend build
+dist/
+
+# Tauri / Rust build
+src-tauri/target/
+src-tauri/target/**
+
+# Python cache
+__pycache__/
+*.py[cod]
+.python-version
+.venv/
+venv/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local runtime outputs
+results/
+outputs/
+*.tmp
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Local planning / generated docs not committed for public source release
+*.md
+docs/
+.omc/
+.spec-workflow/
+
+# Build/release artifacts
+release/
+python-runtime/
+src-tauri/resources/
+*.zip
+*.tar.zst
+*.dmg
+*.msi
+*.exe
+!src-tauri/icons/*.ico

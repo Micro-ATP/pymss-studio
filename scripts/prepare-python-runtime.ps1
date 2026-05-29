@@ -1,9 +1,10 @@
 param(
-    [ValidateSet("cuda")]
+    [ValidateSet("cuda", "default")]
     [string]$Variant = "cuda",
     [string]$Python = "python",
     [string]$RuntimeDir = "python-runtime",
-    [string]$TorchIndexUrl = "https://download.pytorch.org/whl/cu126"
+    [string]$TorchVersion = "2.7.1",
+    [string]$TorchIndexUrl = "https://download.pytorch.org/whl/cu128"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,18 +15,24 @@ if (Test-Path -LiteralPath $runtime) {
     Remove-Item -LiteralPath $runtime -Recurse -Force
 }
 
-& $Python -m venv $runtime
-$runtimePython = if ($IsWindows -or $env:OS -eq "Windows_NT") {
-    Join-Path $runtime "Scripts\python.exe"
-} else {
-    Join-Path $runtime "bin/python"
+$pythonExe = (Get-Command $Python).Source
+$pythonHome = Split-Path -Parent $pythonExe
+Write-Host "Copying portable Python runtime from $pythonHome"
+robocopy $pythonHome $runtime /E /XD __pycache__ /XF *.pyc | Out-Host
+if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
+$global:LASTEXITCODE = 0
+
+$runtimePython = Join-Path $runtime "python.exe"
+if (!(Test-Path -LiteralPath $runtimePython)) {
+    throw "python.exe was not copied to $runtime"
 }
 
 & $runtimePython -m pip install --upgrade pip setuptools wheel
+$torchRequirement = if ([string]::IsNullOrWhiteSpace($TorchVersion)) { "torch" } else { "torch==$TorchVersion" }
 if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) {
-    & $runtimePython -m pip install --no-cache-dir torch
+    & $runtimePython -m pip install --no-cache-dir $torchRequirement
 } else {
-    & $runtimePython -m pip install --no-cache-dir torch --index-url $TorchIndexUrl
+    & $runtimePython -m pip install --no-cache-dir $torchRequirement --index-url $TorchIndexUrl
 }
 & $runtimePython -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
 

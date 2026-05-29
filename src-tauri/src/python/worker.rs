@@ -8,6 +8,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     if cfg!(debug_assertions) {
         // CARGO_MANIFEST_DIR is set at compile time to src-tauri/
@@ -113,7 +119,10 @@ fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
 
     for runtime in runtime_dirs {
         let candidates = if cfg!(windows) {
-            vec![runtime.join("python.exe")]
+            vec![
+                runtime.join("python.exe"),
+                runtime.join("Scripts").join("python.exe"),
+            ]
         } else {
             vec![
                 runtime.join("bin").join("python3"),
@@ -172,6 +181,8 @@ fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&Pa
         "python".to_string()
     };
     let mut cmd = Command::new(python);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.arg(worker)
         .arg(command)
         .env("PYTHONIOENCODING", "utf-8")
@@ -241,9 +252,19 @@ pub fn run_worker_with_payload(app: &AppHandle, command: &str, payload: Option<V
     let stdout = child.stdout.take().ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
+    let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_lines_for_thread = Arc::clone(&stderr_lines);
     let stderr_handle = stderr.map(|stderr| {
         std::thread::spawn(move || {
-            read_lossy_lines(stderr, |line| emit_worker_stderr(&stderr_app, line));
+            read_lossy_lines(stderr, |line| {
+                if let Ok(mut lines) = stderr_lines_for_thread.lock() {
+                    lines.push(line.clone());
+                    if lines.len() > 20 {
+                        lines.remove(0);
+                    }
+                }
+                emit_worker_stderr(&stderr_app, line);
+            });
         })
     });
     let mut last_payload = Value::Null;
@@ -280,7 +301,13 @@ pub fn run_worker_with_payload(app: &AppHandle, command: &str, payload: Option<V
         let _ = std::fs::remove_file(path);
     }
     if !status.success() {
-        return Err(AppError::Worker(format!("worker exited with {status}")));
+        let detail = stderr_lines
+            .lock()
+            .ok()
+            .map(|lines| lines.join("\n"))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| status.to_string());
+        return Err(AppError::Worker(format!("worker exited with {detail}")));
     }
     Ok(last_payload)
 }

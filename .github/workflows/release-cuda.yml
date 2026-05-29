@@ -20,7 +20,8 @@ jobs:
     runs-on: windows-latest
     env:
       PYMSS_VERSION: ${{ github.event.inputs.version || github.ref_name }}
-      TORCH_INDEX_URL: https://download.pytorch.org/whl/cu126
+      TORCH_VERSION: 2.7.1
+      TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +50,17 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Install Inno Setup Chinese language file
+        shell: pwsh
+        run: |
+          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          New-Item -ItemType Directory -Force -Path $languages | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
+            -OutFile (Join-Path $languages "ChineseSimplified.isl")
+          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
+            throw "ChineseSimplified.isl was not installed"
+          }
       - name: Install frontend dependencies
         working-directory: .
         run: pnpm install --frozen-lockfile
@@ -56,15 +68,11 @@ jobs:
       - name: Prepare embedded CUDA Python runtime
         working-directory: .
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchIndexUrl $env:TORCH_INDEX_URL
+        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
 
-      - name: Build frontend
+      - name: Build Tauri production app
         working-directory: .
-        run: pnpm build
-
-      - name: Build Tauri app directory
-        working-directory: src-tauri
-        run: cargo build --release
+        run: pnpm tauri build --no-bundle
 
       - name: Stage portable directory
         shell: pwsh
@@ -76,7 +84,10 @@ jobs:
           Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
-          Copy-Item "pymss-core" "$stage/pymss" -Recurse
+          $pymssSource = (Resolve-Path "pymss-core").Path
+          robocopy $pymssSource "$stage\pymss" /E /XD .git .github .claude .omc .spec-workflow __pycache__ /XF *.pyc | Out-Host
+          if ($LASTEXITCODE -gt 7) { throw "robocopy pymss-core failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
           @"
           Pymss Studio $version Windows x64 CUDA
           Author: TheSmallHanCat
@@ -84,8 +95,14 @@ jobs:
           This installer includes Python runtime, CUDA PyTorch, worker.py, and pymss source code.
           NVIDIA driver is required for GPU acceleration.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
-          echo "PYMSS_PORTABLE_DIR=$stage" >> $env:GITHUB_ENV
-          echo "PYMSS_INSTALLER_OUTPUT=release" >> $env:GITHUB_ENV
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" env_info
+          if ($LASTEXITCODE -ne 0) { throw "Staged Python worker env_info failed with exit code $LASTEXITCODE" }
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          if ($LASTEXITCODE -ne 0) { throw "Staged Python worker list_models failed with exit code $LASTEXITCODE" }
+          $stageFull = (Resolve-Path $stage).Path
+          $releaseFull = (Resolve-Path "release").Path
+          echo "PYMSS_PORTABLE_DIR=$stageFull" >> $env:GITHUB_ENV
+          echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
           echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
 
       - name: Build Windows portable zip
@@ -119,7 +136,8 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       PYMSS_VERSION: ${{ github.event.inputs.version || github.ref_name }}
-      TORCH_INDEX_URL: https://download.pytorch.org/whl/cu126
+      TORCH_VERSION: 2.7.1
+      TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
     steps:
       - uses: actions/checkout@v4
 
@@ -158,13 +176,9 @@ jobs:
         working-directory: .
         run: bash scripts/prepare-python-runtime.sh cuda
 
-      - name: Build frontend
+      - name: Build Tauri production binary
         working-directory: .
-        run: pnpm build
-
-      - name: Build Tauri binary
-        working-directory: src-tauri
-        run: cargo build --release
+        run: pnpm tauri build --no-bundle
 
       - name: Stage Linux package
         run: |
@@ -237,6 +251,7 @@ jobs:
       - name: Prepare embedded Python runtime with PyTorch MPS support
         working-directory: .
         env:
+          TORCH_VERSION: "2.7.1"
           TORCH_INDEX_URL: ""
         run: bash scripts/prepare-python-runtime.sh cuda
 
@@ -248,18 +263,31 @@ jobs:
           mkdir -p src-tauri/resources/pymss
           rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
 
-      - name: Build Tauri DMG
+      - name: Build Tauri app bundle
         working-directory: .
         env:
           TAURI_CONFIG: '{"bundle":{"resources":["../python/*","resources/python-runtime","resources/pymss"]}}'
-        run: pnpm tauri build --bundles dmg
+        run: pnpm tauri build --bundles app
 
-      - name: Rename DMG
+      - name: Build DMG with hdiutil
         run: |
           VERSION="${PYMSS_VERSION#v}"
           mkdir -p release
-          DMG=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' | head -n 1)
-          cp "$DMG" "release/Pymss-Studio-${VERSION}-macos-${{ matrix.arch }}-mps.dmg"
+          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name 'Pymss Studio.app' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "Pymss Studio.app not found"
+            exit 1
+          fi
+          STAGE="$(mktemp -d)"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "Pymss Studio" \
+            -srcfolder "$STAGE" \
+            -ov \
+            -format UDZO \
+            "release/Pymss-Studio-${VERSION}-macos-${{ matrix.arch }}-mps.dmg"
+          rm -rf "$STAGE"
           echo "PYMSS_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Upload macOS artifact

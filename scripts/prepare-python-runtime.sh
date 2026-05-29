@@ -4,17 +4,24 @@ set -euo pipefail
 VARIANT="${1:-cuda}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUNTIME_DIR="${RUNTIME_DIR:-python-runtime}"
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu126}"
+TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL-https://download.pytorch.org/whl/cu128}"
 
 rm -rf "$RUNTIME_DIR"
 "$PYTHON_BIN" -m venv "$RUNTIME_DIR"
 PY="$RUNTIME_DIR/bin/python"
 
 "$PY" -m pip install --upgrade pip setuptools wheel
-if [[ -z "$TORCH_INDEX_URL" ]]; then
-  "$PY" -m pip install --no-cache-dir torch
+if [[ -n "$TORCH_VERSION" ]]; then
+  TORCH_REQUIREMENT="torch==${TORCH_VERSION}"
 else
-  "$PY" -m pip install --no-cache-dir torch --index-url "$TORCH_INDEX_URL"
+  TORCH_REQUIREMENT="torch"
+fi
+
+if [[ -z "$TORCH_INDEX_URL" ]]; then
+  "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT"
+else
+  "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url "$TORCH_INDEX_URL"
 fi
 "$PY" -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
 

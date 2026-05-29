@@ -12,7 +12,13 @@ $removeDirs = @(
     "include",
     "libs",
     "share",
-    "tcl"
+    "tcl",
+    "Lib\ensurepip",
+    "Lib\idlelib",
+    "Lib\lib2to3",
+    "Lib\tkinter",
+    "Lib\venv",
+    "Scripts"
 )
 foreach ($name in $removeDirs) {
     $path = Join-Path $runtime $name
@@ -22,7 +28,7 @@ foreach ($name in $removeDirs) {
 }
 
 Get-ChildItem -LiteralPath $runtime -Recurse -Force -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -in @("__pycache__", "test", "tests", "testing") } |
+    Where-Object { $_.Name -in @("__pycache__", "test", "tests") } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 
 Get-ChildItem -LiteralPath $runtime -Recurse -Force -File -ErrorAction SilentlyContinue |
@@ -47,7 +53,25 @@ if ($sitePackages -and (Test-Path -LiteralPath $sitePackages)) {
     Get-ChildItem -LiteralPath $sitePackages -Force -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match "(?i)(^pip-|^setuptools-|^wheel-|^pip$|^setuptools$|^wheel$)" } |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+
+    Get-ChildItem -LiteralPath $sitePackages -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -in @("__pycache__", "test", "tests", "testsuite", "examples", "example", "benchmarks", "docs", "doc") -and
+            $_.FullName -notmatch "[\\/]site-packages[\\/]torch[\\/]testing([\\/]|$)"
+        } |
+        Sort-Object FullName -Descending |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+
+    Get-ChildItem -LiteralPath $sitePackages -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match "(?i)\.dist-info$|\.egg-info$" } |
+        ForEach-Object {
+            Get-ChildItem -LiteralPath $_.FullName -Force -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^(RECORD|WHEEL|entry_points\.txt|INSTALLER|REQUESTED|licenses?)$' } |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+        }
 }
 
 $size = (Get-ChildItem -LiteralPath $runtime -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
 Write-Host ("Pruned runtime size: {0:N2} GB" -f ($size / 1GB))
+
+# Note: do not remove site-packages/torch/testing. PyTorch imports torch.testing during normal startup.

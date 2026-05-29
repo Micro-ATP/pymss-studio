@@ -40,7 +40,6 @@ DirExistsWarning=no
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -72,7 +71,7 @@ end;
 
 procedure CleanupInstallTree();
 begin
-  ; Remove known development leftovers if they ever slip into the staged directory.
+  { Remove known development leftovers if they ever slip into the staged directory. }
   RemoveIfExists(ExpandConstant('{app}') + '\.git');
   RemoveIfExists(ExpandConstant('{app}') + '\.github');
   RemoveIfExists(ExpandConstant('{app}') + '\.claude');
@@ -86,6 +85,11 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then
+  begin
+    RemoveIfExists(ExpandConstant('{app}') + '\python-runtime');
+  end;
+
   if CurStep = ssPostInstall then
   begin
     CleanupInstallTree();

@@ -19,11 +19,37 @@ try:
 except Exception:
     pass
 
-# Development mode: prefer the sibling pymss source tree.
-# Example: D:/pymss/pymss-desktop/python/worker.py -> D:/pymss/pymss
-DEV_PYMSS = Path(__file__).resolve().parents[2] / "pymss"
-if DEV_PYMSS.exists():
-    sys.path.insert(0, str(DEV_PYMSS))
+def bootstrap_pymss_path() -> None:
+    worker_path = Path(__file__).resolve()
+    worker_dir = worker_path.parent
+    candidates: list[Path] = []
+
+    env_pymss = os.environ.get("PYMSS_STUDIO_PYMSS_PATH")
+    if env_pymss:
+        candidates.append(Path(env_pymss))
+
+    # Portable / staged layout:
+    #   <root>/python/worker.py
+    #   <root>/pymss/...
+    candidates.append(worker_dir.parent / "pymss")
+
+    # Development layout:
+    #   <workspace>/pymss-desktop/python/worker.py
+    #   <workspace>/pymss/...
+    candidates.append(worker_dir.parent.parent / "pymss")
+
+    # Tauri bundled resources sometimes place the worker deeper in resources.
+    candidates.append(worker_dir.parent / "resources" / "pymss")
+    candidates.append(worker_dir.parent.parent / "resources" / "pymss")
+
+    for candidate in candidates:
+        package_init = candidate / "pymss" / "__init__.py"
+        if package_init.is_file():
+            sys.path.insert(0, str(candidate))
+            return
+
+
+bootstrap_pymss_path()
 
 
 def now_iso() -> str:

@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '@/stores/settings'
 import { useModelStore } from '@/stores/model'
 
-export type TaskStatus = 'queued' | 'preparing' | 'downloading_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
+export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
 export type StemOutput = { stem: string; path: string }
 export type SeparationTask = {
@@ -16,6 +16,8 @@ export type SeparationTask = {
   message: string
   createdAt: number
   updatedAt: number
+  progress: number
+  stageLabel: string
   files: string[]
   outputs: StemOutput[]
   logs: string[]
@@ -28,9 +30,82 @@ function loadHistory(): SeparationTask[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY)
     if (!raw) return []
-    return JSON.parse(raw)
+    const parsed = JSON.parse(raw) as Partial<SeparationTask>[]
+    return parsed.map((task) => normalizeTask(task))
   } catch {
     return []
+  }
+}
+
+const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'cancelled']
+
+const STAGE_META: Record<TaskStatus, { progress: number; label: string }> = {
+  queued: { progress: 2, label: 'Queued' },
+  preparing: { progress: 8, label: 'Preparing' },
+  validating_input: { progress: 12, label: 'Validating input' },
+  downloading_model: { progress: 22, label: 'Checking model files' },
+  ensuring_model: { progress: 22, label: 'Checking model files' },
+  loading_model: { progress: 35, label: 'Loading model' },
+  separating: { progress: 68, label: 'Separating audio' },
+  writing_output: { progress: 92, label: 'Collecting outputs' },
+  done: { progress: 100, label: 'Done' },
+  failed: { progress: 100, label: 'Failed' },
+  cancelled: { progress: 100, label: 'Cancelled' },
+}
+
+function normalizeStatus(status: unknown): TaskStatus {
+  if (typeof status !== 'string') return 'queued'
+  if (status in STAGE_META) return status as TaskStatus
+  return 'preparing'
+}
+
+function normalizeOutputPath(value?: string | null) {
+  return value && value.trim() ? value : 'results'
+}
+
+function joinOutputPath(base: string, child: string) {
+  const separator = base.includes('\\') ? '\\' : '/'
+  return `${base.replace(/[\\/]$/, '')}${separator}${child}`
+}
+
+function taskOutputPath(base: string, taskId: string) {
+  return joinOutputPath(normalizeOutputPath(base), taskId)
+}
+
+function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wav'): StemOutput[] {
+  if (!files?.length) return []
+  const separator = outputDir.includes('\\') ? '\\' : '/'
+  const base = outputDir.replace(/[\\/]$/, '')
+  return files.map((file) => {
+    const stemName = file.replace(/\.[^/.\\]+$/, '')
+    return {
+      stem: stemName,
+      path: `${base}${separator}${stemName}.${outputFormat}`,
+    }
+  })
+}
+
+function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
+  const status = normalizeStatus(task.status)
+  const meta = STAGE_META[status]
+  const progress = typeof task.progress === 'number'
+    ? Math.max(meta.progress, Math.min(100, task.progress))
+    : meta.progress
+  return {
+    id: task.id || `task_${Date.now()}`,
+    model: task.model || '',
+    input: task.input || '',
+    output: normalizeOutputPath(task.output),
+    status,
+    message: task.message || meta.label,
+    createdAt: task.createdAt || Date.now(),
+    updatedAt: task.updatedAt || task.createdAt || Date.now(),
+    progress: TERMINAL_STATUSES.includes(status) ? 100 : progress,
+    stageLabel: task.stageLabel || meta.label,
+    files: task.files || [],
+    outputs: task.outputs || [],
+    logs: task.logs || [],
+    error: task.error,
   }
 }
 
@@ -56,7 +131,7 @@ export const useTaskStore = defineStore('task', () => {
 
   const activeTask = computed(() => tasks.value.find((task) => task.id === activeTaskId.value) || null)
   const completedTasks = computed(() => tasks.value.filter((task) => task.status === 'done'))
-  const runningTasks = computed(() => tasks.value.filter((task) => !['done', 'failed', 'cancelled'].includes(task.status)))
+  const runningTasks = computed(() => tasks.value.filter((task) => !TERMINAL_STATUSES.includes(task.status)))
 
   watch(tasks, (value) => {
     const persistable = value.slice(0, 80).map((task) => ({ ...task, logs: task.logs.slice(-120) }))
@@ -67,12 +142,19 @@ export const useTaskStore = defineStore('task', () => {
     task.updatedAt = Date.now()
   }
 
-  function setTaskStatus(id: string, status: TaskStatus, message: string) {
+  function setTaskStatus(id: string, status: TaskStatus, message?: string, progress?: number) {
     const task = tasks.value.find((item) => item.id === id)
     if (!task) return
+    if (TERMINAL_STATUSES.includes(task.status) && !TERMINAL_STATUSES.includes(status)) return
+    const meta = STAGE_META[status]
     task.status = status
-    task.message = message
-    task.logs.push(`${new Date().toLocaleTimeString()} ${message}`)
+    task.stageLabel = meta.label
+    task.message = message || meta.label
+    const nextProgress = progress ?? meta.progress
+    task.progress = status === 'done' || status === 'failed' || status === 'cancelled'
+      ? 100
+      : Math.max(task.progress || 0, Math.min(99, nextProgress))
+    task.logs.push(`${new Date().toLocaleTimeString()} ${task.message}`)
     task.logs = task.logs.slice(-300)
     touch(task)
   }
@@ -82,9 +164,11 @@ export const useTaskStore = defineStore('task', () => {
     if (!taskId) return
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return
-    if (event.type === 'task_stage') {
-      const stage = event.payload?.stage as TaskStatus
-      setTaskStatus(taskId, stage, event.payload?.message || stage)
+    if (event.type === 'task_started') {
+      setTaskStatus(taskId, 'preparing', 'Task started', 6)
+    } else if (event.type === 'task_stage') {
+      const stage = normalizeStatus(event.payload?.stage)
+      setTaskStatus(taskId, stage, event.payload?.message || STAGE_META[stage].label, event.payload?.progress)
     } else if (event.type === 'task_log') {
       task.logs.push(`${event.payload?.level || 'info'}: ${event.payload?.message || ''}`)
       task.logs = task.logs.slice(-300)
@@ -93,16 +177,26 @@ export const useTaskStore = defineStore('task', () => {
       task.status = 'failed'
       task.error = event.payload?.message || 'Unknown error'
       task.message = task.error || 'Unknown error'
+      task.stageLabel = STAGE_META.failed.label
+      task.progress = 100
       touch(task)
     } else if (event.type === 'task_done') {
       task.status = 'done'
       task.message = 'Done'
+      task.stageLabel = STAGE_META.done.label
+      task.progress = 100
       task.files = event.payload?.files || []
-      task.outputs = event.payload?.outputs || []
+      if (event.payload?.outputDir) task.output = event.payload.outputDir
+      task.outputs = event.payload?.outputs?.length
+        ? event.payload.outputs
+        : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav')
+      task.error = undefined
       touch(task)
     } else if (event.type === 'task_cancelled') {
       task.status = 'cancelled'
       task.message = event.payload?.message || 'Cancelled'
+      task.stageLabel = STAGE_META.cancelled.label
+      task.progress = 100
       touch(task)
     }
   }
@@ -136,6 +230,8 @@ export const useTaskStore = defineStore('task', () => {
     if (task && cancelled) {
       task.status = 'cancelled'
       task.message = 'Cancelled'
+      task.stageLabel = STAGE_META.cancelled.label
+      task.progress = 100
       touch(task)
     }
     return cancelled
@@ -155,11 +251,13 @@ export const useTaskStore = defineStore('task', () => {
       id,
       model: modelStore.selectedModel,
       input: inputPath.value,
-      output: settings.outputDir || 'results',
+      output: taskOutputPath(settings.outputDir, id),
       status: 'queued',
       message: 'Queued',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      progress: STAGE_META.queued.progress,
+      stageLabel: STAGE_META.queued.label,
       files: [],
       outputs: [],
       logs: [],
@@ -182,6 +280,7 @@ export const useTaskStore = defineStore('task', () => {
     if (shifts.value > 0) inferenceParams.shifts = shifts.value
     if (!split.value) inferenceParams.split = false
     if (overlap.value !== 0.25) inferenceParams.overlap = overlap.value
+    const runtimeDevice = settings.getRuntimeDeviceConfig()
 
     try {
       await invoke<{ taskId: string; started: boolean }>('start_separation', {
@@ -194,8 +293,8 @@ export const useTaskStore = defineStore('task', () => {
           download: true,
           source: settings.downloadSource,
           endpoint: null,
-          device: settings.defaultDevice,
-          deviceIds: settings.getDeviceIds(),
+          device: runtimeDevice.device,
+          deviceIds: runtimeDevice.deviceIds,
           outputFormat: settings.defaultFormat,
           useTta: useTta.value,
           debug: debug.value,
@@ -208,6 +307,8 @@ export const useTaskStore = defineStore('task', () => {
       task.status = 'failed'
       task.error = err instanceof Error ? err.message : String(err)
       task.message = task.error
+      task.stageLabel = STAGE_META.failed.label
+      task.progress = 100
       touch(task)
       throw err
     }
@@ -223,11 +324,13 @@ export const useTaskStore = defineStore('task', () => {
       id,
       model: existing.model,
       input: existing.input,
-      output: settings.outputDir || 'results',
+      output: taskOutputPath(settings.outputDir, id),
       status: 'queued',
       message: 'Queued',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      progress: STAGE_META.queued.progress,
+      stageLabel: STAGE_META.queued.label,
       files: [],
       outputs: [],
       logs: [],
@@ -238,6 +341,7 @@ export const useTaskStore = defineStore('task', () => {
     try {
       modelStore.selectedModel = existing.model
       inputPath.value = existing.input
+      const runtimeDevice = settings.getRuntimeDeviceConfig()
       await invoke<{ taskId: string; started: boolean }>('start_separation', {
         payload: {
           taskId: id,
@@ -248,8 +352,8 @@ export const useTaskStore = defineStore('task', () => {
           download: true,
           source: settings.downloadSource,
           endpoint: null,
-          device: settings.defaultDevice,
-          deviceIds: settings.getDeviceIds(),
+          device: runtimeDevice.device,
+          deviceIds: runtimeDevice.deviceIds,
           outputFormat: settings.defaultFormat,
           useTta: useTta.value,
           debug: debug.value,
@@ -262,6 +366,8 @@ export const useTaskStore = defineStore('task', () => {
       task.status = 'failed'
       task.error = err instanceof Error ? err.message : String(err)
       task.message = task.error
+      task.stageLabel = STAGE_META.failed.label
+      task.progress = 100
       touch(task)
       throw err
     }

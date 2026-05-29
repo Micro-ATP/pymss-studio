@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import platform
 import sys
 import traceback
@@ -18,7 +19,8 @@ try:
 except Exception:
     pass
 
-# 开发期优先使用相邻 pymss 源码：E:/123/pymss-desktop/python/worker.py -> E:/123/pymss
+# Development mode: prefer the sibling pymss source tree.
+# Example: D:/pymss/pymss-desktop/python/worker.py -> D:/pymss/pymss
 DEV_PYMSS = Path(__file__).resolve().parents[2] / "pymss"
 if DEV_PYMSS.exists():
     sys.path.insert(0, str(DEV_PYMSS))
@@ -38,13 +40,13 @@ def emit(event_type: str, payload: dict[str, Any] | None = None, *, request_id: 
     }, ensure_ascii=False), flush=True)
 
 
-def emit_error(code: str, message: str, detail: str | None = None) -> int:
+def emit_error(code: str, message: str, detail: str | None = None, *, task_id: str | None = None) -> int:
     emit("error", {
         "code": code,
         "message": message,
         "detail": detail,
         "recoverable": True,
-    })
+    }, task_id=task_id)
     return 1
 
 
@@ -118,9 +120,11 @@ def cmd_env_info() -> int:
         "torchVersion": None,
         "cudaAvailable": False,
         "cudaDeviceCount": 0,
+        "cudaDevices": [],
         "mpsAvailable": False,
         "mlxAvailable": import_available("mlx"),
         "avAvailable": import_available("av"),
+        "librosaAvailable": import_available("librosa"),
     }
 
     try:
@@ -136,6 +140,19 @@ def cmd_env_info() -> int:
         payload["torchVersion"] = getattr(torch, "__version__", None)
         payload["cudaAvailable"] = bool(torch.cuda.is_available())
         payload["cudaDeviceCount"] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+        cuda_devices: list[dict[str, Any]] = []
+        if torch.cuda.is_available():
+            for index in range(int(torch.cuda.device_count())):
+                item: dict[str, Any] = {"id": index, "name": torch.cuda.get_device_name(index)}
+                try:
+                    props = torch.cuda.get_device_properties(index)
+                    item["totalMemoryBytes"] = int(getattr(props, "total_memory", 0) or 0)
+                    item["major"] = int(getattr(props, "major", 0) or 0)
+                    item["minor"] = int(getattr(props, "minor", 0) or 0)
+                except Exception:
+                    pass
+                cuda_devices.append(item)
+        payload["cudaDevices"] = cuda_devices
         mps = getattr(torch.backends, "mps", None)
         payload["mpsAvailable"] = bool(mps and mps.is_available())
     except Exception as exc:
@@ -253,7 +270,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
         from pymss.model_download import download_model  # type: ignore
         from pymss.model_registry import get_model_entry  # type: ignore
     except Exception as exc:
-        return emit_error("PYMSS_IMPORT_FAILED", str(exc), traceback.format_exc())
+        return emit_error("PYMSS_IMPORT_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
 
     try:
         entry = get_model_entry(model_name)
@@ -298,9 +315,9 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
         }, task_id=task_id)
         return 0
     except KeyError as exc:
-        return emit_error("MODEL_NOT_FOUND", str(exc))
+        return emit_error("MODEL_NOT_FOUND", str(exc), task_id=task_id)
     except Exception as exc:
-        return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc())
+        return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
 
 
 class JsonLogHandler:
@@ -337,13 +354,17 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     task_id = payload.get("taskId") or f"sep_{int(datetime.now().timestamp())}"
     model_name = payload.get("model")
     input_path = payload.get("input")
-    output_dir = payload.get("output") or "results"
+    default_output_dir = os.environ.get("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR")
+    output_dir = payload.get("output") or default_output_dir or "results"
+    output_path = Path(output_dir)
+    if not output_path.is_absolute() and default_output_dir:
+        output_dir = str(Path(default_output_dir).parent / output_path)
     if not model_name:
-        return emit_error("MODEL_NOT_FOUND", "Missing model name")
+        return emit_error("MODEL_NOT_FOUND", "Missing model name", task_id=task_id)
     if not input_path:
-        return emit_error("INPUT_NOT_FOUND", "Missing input path")
+        return emit_error("INPUT_NOT_FOUND", "Missing input path", task_id=task_id)
     if not Path(input_path).exists():
-        return emit_error("INPUT_NOT_FOUND", f"Input path does not exist: {input_path}")
+        return emit_error("INPUT_NOT_FOUND", f"Input path does not exist: {input_path}", task_id=task_id)
 
     model_dir = payload.get("modelDir") or None
     download = bool(payload.get("download", True))
@@ -360,6 +381,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         "flac_bit_depth": "PCM_24",
         "mp3_bit_rate": "320k",
         "m4a_bit_rate": "192k",
+        "m4a_codec": "aac_at",
         "m4a_aac_at_quality": 2,
     }
 
@@ -404,10 +426,10 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
         separator.del_cache()
         outputs = collect_outputs(output_dir, success_files, output_format)
-        emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(output_dir).resolve())}, task_id=task_id)
+        emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(output_dir).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
     except Exception as exc:
-        return emit_error("INFERENCE_FAILED", str(exc), traceback.format_exc())
+        return emit_error("INFERENCE_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

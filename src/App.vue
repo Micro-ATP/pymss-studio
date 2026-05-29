@@ -1,17 +1,26 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
+import { computed, onMounted } from 'vue'
 import { darkTheme } from 'naive-ui'
 import type { GlobalThemeOverrides } from 'naive-ui'
 import TitleBar from '@/components/TitleBar.vue'
 import SideNav from '@/components/SideNav.vue'
 import { useSettingsStore } from '@/stores/settings'
+import { useAppStore } from '@/stores/app'
 import { resolvedIsDark } from '@/utils/theme'
 
 const settings = useSettingsStore()
+const app = useAppStore()
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
 
 // Naive UI's seemly/rgba() requires actual CSS color values (not var() references)
+
+onMounted(() => {
+  if (!app.envInfo && !app.envLoading) {
+    app.checkEnv().catch(() => {})
+  }
+})
+
 const themeOverrides = computed<GlobalThemeOverrides>(() => {
   const dark = isDark.value
   return {

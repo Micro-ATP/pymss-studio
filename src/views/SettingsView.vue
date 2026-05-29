@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { SUPPORTED_LOCALES } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
+import { useAppStore } from '@/stores/app'
 import {
   ColorPaletteOutline,
   GlobeOutline,
@@ -12,7 +14,15 @@ import {
 
 const { t } = useI18n()
 const settings = useSettingsStore()
-const { themeMode, locale, modelDir, outputDir, defaultDevice, defaultFormat, downloadSource, deviceIds, wavBitDepth, flacBitDepth, mp3BitRate, m4aBitRate, m4aCodec } = storeToRefs(settings)
+const app = useAppStore()
+const { themeMode, locale, modelDir, outputDir, defaultDevice, defaultFormat, downloadSource, wavBitDepth, flacBitDepth, mp3BitRate, m4aBitRate, m4aCodec } = storeToRefs(settings)
+const deviceOptions = computed(() => settings.deviceOptions(app.envInfo))
+
+onMounted(() => {
+  if (!app.envInfo && !app.envLoading) {
+    app.checkEnv().catch(() => {})
+  }
+})
 </script>
 
 <template>
@@ -123,13 +133,7 @@ const { themeMode, locale, modelDir, outputDir, defaultDevice, defaultFormat, do
               <label class="text-muted text-sm">{{ t('settings.defaultDevice') }}</label>
               <n-select
                 v-model:value="defaultDevice"
-                :options="[
-                  { label: 'Auto', value: 'auto' },
-                  { label: 'CPU', value: 'cpu' },
-                  { label: 'CUDA', value: 'cuda' },
-                  { label: 'MPS', value: 'mps' },
-                  { label: 'MLX', value: 'mlx' },
-                ]"
+                :options="deviceOptions"
               />
             </n-grid-item>
             <n-grid-item>
@@ -143,10 +147,6 @@ const { themeMode, locale, modelDir, outputDir, defaultDevice, defaultFormat, do
                   { label: 'M4A', value: 'm4a' },
                 ]"
               />
-            </n-grid-item>
-            <n-grid-item>
-              <label class="text-muted text-sm">{{ t('inference.deviceIds') }}</label>
-              <n-input v-model:value="deviceIds" :placeholder="t('inference.deviceIdsPlaceholder')" clearable />
             </n-grid-item>
             <n-grid-item>
               <label class="text-muted text-sm">{{ t('settings.downloadSource') }}</label>

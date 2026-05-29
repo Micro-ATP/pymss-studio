@@ -21,11 +21,120 @@ fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
         let cwd = std::env::current_dir()?;
         Ok(cwd.join("python").join("worker.py"))
     } else {
-        let resource = app
+        if let Ok(resource) = app.path().resource_dir() {
+            let path = resource.join("python").join("worker.py");
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+        let exe_dir = std::env::current_exe()?
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        Ok(exe_dir.join("python").join("worker.py"))
+    }
+}
+
+fn dev_workspace_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR is set at compile time to pymss-desktop/src-tauri.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn dev_pymss_source_path() -> AppResult<Option<PathBuf>> {
+    let desktop_root = dev_workspace_root();
+    let sibling = desktop_root
+        .parent()
+        .map(|root| root.join("pymss"))
+        .filter(|path| path.join("pymss").join("__init__.py").is_file());
+    if sibling.is_some() {
+        return Ok(sibling);
+    }
+
+    let cwd = std::env::current_dir()?;
+    let candidates = [
+        cwd.join("..").join("pymss"),
+        cwd.join("pymss"),
+        cwd.join("..").join("..").join("pymss"),
+    ];
+    Ok(candidates
+        .into_iter()
+        .find(|path| path.join("pymss").join("__init__.py").is_file()))
+}
+
+fn production_pymss_source_path(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        candidates.push(resource.join("pymss"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("pymss"));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.join("pymss").join("__init__.py").is_file())
+}
+
+fn pymss_source_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
+    if let Ok(path) = std::env::var("PYMSS_STUDIO_PYMSS_PATH") {
+        let path = PathBuf::from(path);
+        if path.join("pymss").join("__init__.py").is_file() {
+            return Ok(Some(path));
+        }
+        return Err(AppError::Worker(format!(
+            "PYMSS_STUDIO_PYMSS_PATH does not point to a pymss source tree: {}",
+            path.display()
+        )));
+    }
+
+    if cfg!(debug_assertions) {
+        dev_pymss_source_path()
+    } else {
+        Ok(production_pymss_source_path(app))
+    }
+}
+
+fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
+    let mut runtime_dirs = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        runtime_dirs.push(resource.join("python-runtime"));
+    }
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    runtime_dirs.push(exe_dir.join("python-runtime"));
+
+    for runtime in runtime_dirs {
+        let candidates = if cfg!(windows) {
+            vec![runtime.join("python.exe")]
+        } else {
+            vec![
+                runtime.join("bin").join("python3"),
+                runtime.join("bin").join("python"),
+            ]
+        };
+        if let Some(path) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+
+fn default_output_dir(app: &AppHandle) -> AppResult<PathBuf> {
+    if cfg!(debug_assertions) {
+        Ok(dev_workspace_root().join("results"))
+    } else {
+        let app_data = app
             .path()
-            .resource_dir()
+            .app_data_dir()
             .map_err(|e| AppError::Worker(e.to_string()))?;
-        Ok(resource.join("python").join("worker.py"))
+        Ok(app_data.join("results"))
     }
 }
 
@@ -49,14 +158,33 @@ fn make_payload_file(command: &str, task_id: Option<&str>, payload: Value) -> Ap
 
 fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&PathBuf>) -> AppResult<Command> {
     let worker = worker_path(app)?;
-    let python = std::env::var("PYMSS_STUDIO_PYTHON").unwrap_or_else(|_| "python".to_string());
-    let pymss_source = std::env::var("PYMSS_STUDIO_PYMSS_PATH").unwrap_or_else(|_| "E:\\123\\pymss".to_string());
+    let python = if let Ok(value) = std::env::var("PYMSS_STUDIO_PYTHON") {
+        value
+    } else if !cfg!(debug_assertions) {
+        if let Some(embedded) = embedded_python_path(app)? {
+            embedded.to_string_lossy().to_string()
+        } else {
+            "python3".to_string()
+        }
+    } else {
+        "python".to_string()
+    };
     let mut cmd = Command::new(python);
     cmd.arg(worker)
         .arg(command)
-        .env("PYTHONPATH", pymss_source)
         .env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUTF8", "1");
+        .env("PYTHONUTF8", "1")
+        .env("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR", default_output_dir(app)?.to_string_lossy().to_string());
+    if let Some(pymss_source) = pymss_source_path(app)? {
+        let mut python_path = pymss_source.to_string_lossy().to_string();
+        if let Ok(existing) = std::env::var("PYTHONPATH") {
+            if !existing.trim().is_empty() {
+                python_path.push(';');
+                python_path.push_str(&existing);
+            }
+        }
+        cmd.env("PYTHONPATH", python_path);
+    }
     if let Some(path) = payload_file {
         cmd.arg("--payload").arg(path);
     }

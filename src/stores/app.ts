@@ -14,9 +14,19 @@ export type EnvInfo = {
   torchError?: string
   cudaAvailable?: boolean
   cudaDeviceCount?: number
+  cudaDevices?: CudaDeviceInfo[]
   mpsAvailable?: boolean
   mlxAvailable?: boolean
   avAvailable?: boolean
+  librosaAvailable?: boolean
+}
+
+export type CudaDeviceInfo = {
+  id: number
+  name: string
+  totalMemoryBytes?: number
+  major?: number
+  minor?: number
 }
 
 export type DiagnosticLevel = 'ok' | 'warn' | 'error'

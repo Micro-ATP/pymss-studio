@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   FolderOpenOutline,
@@ -9,6 +10,7 @@ import { useTaskStore } from '@/stores/task'
 
 const { t } = useI18n()
 const task = useTaskStore()
+const completedWithOutputs = computed(() => task.completedTasks.filter((item) => item.outputs.length || item.files.length))
 </script>
 
 <template>
@@ -21,7 +23,7 @@ const task = useTaskStore()
     </div>
 
     <!-- Empty State -->
-    <n-card v-if="!task.completedTasks.length" :bordered="true">
+    <n-card v-if="!completedWithOutputs.length" :bordered="true">
       <div style="text-align:center;padding:32px 0">
         <n-icon :component="FolderOutline" size="48" color="var(--on-surface-muted)" />
         <p class="text-muted mt-md">{{ t('results.empty') }}</p>
@@ -31,7 +33,7 @@ const task = useTaskStore()
     <!-- Results List -->
     <div v-else style="display:grid;gap:12px">
       <n-card
-        v-for="item in task.completedTasks"
+        v-for="item in completedWithOutputs"
         :key="item.id"
         :bordered="true"
         size="small"

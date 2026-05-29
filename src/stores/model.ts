@@ -58,6 +58,7 @@ export const useModelStore = defineStore('model', () => {
   const selectedModel = ref('bs_roformer_voc_hyperacev2')
   const selectedInfo = ref<ModelEntry | null>(null)
   const isLoading = ref(false)
+  const detailLoading = ref(false)
   const error = ref<string | null>(null)
   const search = ref('')
   const supportedOnly = ref(true)
@@ -118,15 +119,29 @@ export const useModelStore = defineStore('model', () => {
     }
   }
 
-  async function selectModel(name: string) {
+  async function selectModel(modelOrName: string | ModelEntry) {
     const settings = useSettingsStore()
+    const name = typeof modelOrName === 'string' ? modelOrName : modelOrName.name
     selectedModel.value = name
-    selectedInfo.value = await invoke<ModelEntry>('get_model_info', {
-      payload: {
-        model: name,
-        modelDir: settings.modelDir || null,
-      },
-    })
+
+    const listEntry = typeof modelOrName === 'string'
+      ? models.value.find((item) => item.name === name) || null
+      : modelOrName
+    if (listEntry) selectedInfo.value = listEntry
+
+    detailLoading.value = true
+    try {
+      const info = await invoke<ModelEntry>('get_model_info', {
+        payload: {
+          model: name,
+          modelDir: settings.modelDir || null,
+        },
+      })
+      if (selectedModel.value === name) selectedInfo.value = info
+      return info
+    } finally {
+      if (selectedModel.value === name) detailLoading.value = false
+    }
   }
 
   function handleWorkerEvent(event: any) {
@@ -275,6 +290,7 @@ export const useModelStore = defineStore('model', () => {
     selectedModel,
     selectedInfo,
     isLoading,
+    detailLoading,
     error,
     search,
     supportedOnly,

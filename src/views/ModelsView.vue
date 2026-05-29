@@ -31,6 +31,7 @@ const {
   categories,
   categoriesCn,
   isLoading,
+  detailLoading,
   modelDir,
   downloadTasks,
 } = storeToRefs(modelStore)
@@ -80,7 +81,7 @@ async function loadModels() {
 
 async function selectModel(model: ModelEntry) {
   try {
-    await modelStore.selectModel(model.name)
+    await modelStore.selectModel(model)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -336,6 +337,9 @@ onMounted(() => {
             <strong class="detail-name">{{ selectedInfo.name }}</strong>
 
             <div class="detail-badges">
+              <n-tag v-if="detailLoading" :bordered="false" size="small" type="info" round>
+                Refreshing...
+              </n-tag>
               <n-tag v-if="selectedInfo.architecture" :bordered="false" size="small" type="info" round>
                 {{ selectedInfo.architecture }}
               </n-tag>

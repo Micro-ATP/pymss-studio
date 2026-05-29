@@ -1,46 +1,56 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
   DocumentTextOutline,
   CubeOutline,
   FolderOpenOutline,
-  HardwareChipOutline,
   SettingsOutline,
   PlayOutline,
-  CheckmarkCircleOutline,
   MusicalNotesOutline,
   FolderOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore } from '@/stores/task'
 import { useSettingsStore } from '@/stores/settings'
+import { useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
 const message = useMessage()
+const router = useRouter()
 const task = useTaskStore()
 const model = useModelStore()
 const settings = useSettingsStore()
+const app = useAppStore()
 
 const { inputPath, useTta, debug, batchSize, overlapSize, chunkSize, normalize, maskMode, useAmp, cudaAttentionBackend, fuseConvBn, useChannelsLast, shifts, split, overlap } = storeToRefs(task)
 const { selectedModel, downloadedModels, isLoading } = storeToRefs(model)
-const { deviceIds } = storeToRefs(settings)
 
 const currentStep = ref(0)
+const deviceOptions = computed(() => settings.deviceOptions(app.envInfo))
+
+onMounted(() => {
+  if (!app.envInfo && !app.envLoading) {
+    app.checkEnv().catch(() => {})
+  }
+})
+const selectedDeviceLabel = computed(() => deviceOptions.value.find(item => item.value === settings.defaultDevice)?.label || settings.defaultDevice)
 
 const steps = computed(() => [
   { title: t('separate.input'), description: inputPath.value ? inputPath.value.split(/[/\\]/).pop() || '' : '' },
   { title: t('separate.model'), description: selectedModel.value || '' },
   { title: t('separate.output'), description: settings.outputDir || t('separate.outputDefault') },
-  { title: t('separate.advanced'), description: `${settings.defaultDevice} · ${settings.defaultFormat}` },
+  { title: t('separate.advanced'), description: `${selectedDeviceLabel.value} / ${settings.defaultFormat}` },
 ])
 
 async function start() {
   try {
     await task.startSeparation()
     message.success(t('toast.taskStarted'))
+    router.push('/tasks')
   } catch (err) {
     message.error(err instanceof Error ? err.message : t('toast.taskFailed'))
   }
@@ -171,18 +181,8 @@ function prevStep() {
               <label class="text-muted text-sm">{{ t('settings.defaultDevice') }}</label>
               <n-select
                 v-model:value="settings.defaultDevice"
-                :options="[
-                  { label: 'Auto', value: 'auto' },
-                  { label: 'CPU', value: 'cpu' },
-                  { label: 'CUDA', value: 'cuda' },
-                  { label: 'MPS', value: 'mps' },
-                  { label: 'MLX', value: 'mlx' },
-                ]"
+                :options="deviceOptions"
               />
-            </n-grid-item>
-            <n-grid-item>
-              <label class="text-muted text-sm">{{ t('inference.deviceIds') }}</label>
-              <n-input v-model:value="deviceIds" :placeholder="t('inference.deviceIdsPlaceholder')" clearable />
             </n-grid-item>
             <n-grid-item>
               <label class="text-muted text-sm">{{ t('settings.defaultFormat') }}</label>
@@ -247,8 +247,11 @@ function prevStep() {
                     clearable
                     :placeholder="t('common.default')"
                     :options="[
-                      { label: 'Flash Attention', value: 'flash_attn' },
-                      { label: 'SDPA', value: 'sdpa' },
+                      { label: 'Auto', value: 'auto' },
+                      { label: 'Default', value: 'default' },
+                      { label: 'Flash Attention', value: 'flash' },
+                      { label: 'cuDNN', value: 'cudnn' },
+                      { label: 'Memory Efficient', value: 'efficient' },
                       { label: 'xFormers', value: 'xformers' },
                       { label: 'Math', value: 'math' },
                     ]"

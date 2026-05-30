@@ -201,12 +201,15 @@ def cmd_list_models(payload: dict[str, Any]) -> int:
 
     entries = list_models(category=category, supported=True if supported_only else None)
     models = [model_to_dict(entry, model_dir, include_local_state) for entry in entries]
-    categories = sorted({m["category"] for m in models if m.get("category")})
-    categories_cn = sorted({m["categoryCn"] for m in models if m.get("categoryCn")})
+    category_pairs = sorted({
+        (m["category"], m.get("categoryCn") or m["category"])
+        for m in models
+        if m.get("category")
+    }, key=lambda item: item[1] or item[0])
     emit("models", {
         "models": models,
-        "categories": categories,
-        "categoriesCn": categories_cn,
+        "categories": [item[0] for item in category_pairs],
+        "categoriesCn": [item[1] for item in category_pairs],
         "count": len(models),
         "modelDir": str(model_root(model_dir)),
     })

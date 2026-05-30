@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage, useDialog } from 'naive-ui'
@@ -47,13 +47,23 @@ const showDetail = computed({
 })
 
 const downloadedOnly = ref(false)
+const page = ref(1)
+const pageSize = ref(24)
+const pageSizeOptions = [12, 24, 48, 96]
 
 const categoryOptions = computed(() => {
   const all = [{ label: t('common.all'), value: '' }]
-  const items = categories.value.map((cat, i) => ({
-    label: locale.value === 'zh-CN' && categoriesCn.value[i] ? categoriesCn.value[i] : cat,
-    value: cat,
-  }))
+  const seen = new Set<string>()
+  const items = categories.value
+    .map((cat, i) => ({
+      label: locale.value === 'zh-CN' && categoriesCn.value[i] ? categoriesCn.value[i] : cat,
+      value: cat,
+    }))
+    .filter((item) => {
+      if (!item.value || seen.has(item.value)) return false
+      seen.add(item.value)
+      return true
+    })
   return [...all, ...items]
 })
 
@@ -65,6 +75,19 @@ const sortedModels = computed(() => {
     if (a.downloaded !== b.downloaded) return a.downloaded ? -1 : 1
     return 0
   })
+})
+const pagedModels = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return sortedModels.value.slice(start, start + pageSize.value)
+})
+
+watch([search, category, supportedOnly, downloadedOnly, pageSize], () => {
+  page.value = 1
+})
+
+watch(sortedModels, (list) => {
+  const maxPage = Math.max(1, Math.ceil(list.length / pageSize.value))
+  if (page.value > maxPage) page.value = maxPage
 })
 
 function categoryLabel(model: ModelEntry) {
@@ -91,7 +114,7 @@ async function downloadModel(model: ModelEntry, event: MouseEvent) {
   event.stopPropagation()
   try {
     await modelStore.downloadModel(model.name)
-    message.success(t('models.downloaded'))
+    message.success(t('models.downloadStarted'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -160,7 +183,7 @@ onMounted(() => {
           <n-switch v-model:value="downloadedOnly" size="small" />
           <span class="text-sm text-muted">{{ t('models.downloadedOnly') }}</span>
           <n-divider vertical style="margin:0 4px" />
-          <n-switch v-model:value="supportedOnly" size="small" @update:value="loadModels" />
+          <n-switch v-model:value="supportedOnly" size="small" />
           <span class="text-sm text-muted">{{ t('models.supportedOnly') }}</span>
           <n-tag size="small" :bordered="false" type="info" round>
             {{ sortedModels.length }}
@@ -188,25 +211,26 @@ onMounted(() => {
       </div>
 
       <!-- Empty State -->
-      <div v-else-if="!filteredModels.length" class="empty-state">
+      <div v-else-if="!sortedModels.length" class="empty-state">
         <n-icon :component="CubeOutline" size="48" color="var(--on-surface-muted)" />
-        <p class="text-muted">{{ search ? t('models.searchEmpty') : t('models.empty') }}</p>
-        <n-button v-if="!search && !modelStore.models.length" secondary @click="loadModels">
+        <p class="text-muted">{{ search || category || downloadedOnly ? t('models.searchEmpty') : t('models.empty') }}</p>
+        <n-button v-if="!search && !category && !downloadedOnly && !modelStore.models.length" secondary @click="loadModels">
           {{ t('models.load') }}
         </n-button>
       </div>
 
       <!-- Model Grid -->
-      <div v-else class="model-grid">
-        <div
-          v-for="model in sortedModels"
-          :key="model.name"
-          :class="['model-card', {
-            'model-card--selected': selectedModel === model.name,
-            'model-card--unsupported': !model.supported
-          }]"
-          @click="selectModel(model)"
-        >
+      <template v-else>
+        <div class="model-grid">
+          <div
+            v-for="model in pagedModels"
+            :key="model.name"
+            :class="['model-card', {
+              'model-card--selected': selectedModel === model.name,
+              'model-card--unsupported': !model.supported
+            }]"
+            @click="selectModel(model)"
+          >
           <!-- Card Header -->
           <div class="mc-header">
             <span class="mc-name">{{ model.name }}</span>
@@ -325,8 +349,19 @@ onMounted(() => {
               </n-button>
             </div>
           </div>
+          </div>
         </div>
-      </div>
+        <div class="pagination-row">
+          <span class="text-sm text-muted">{{ t('models.pageSummary', { total: sortedModels.length }) }}</span>
+          <n-pagination
+            v-model:page="page"
+            v-model:page-size="pageSize"
+            :item-count="sortedModels.length"
+            :page-sizes="pageSizeOptions"
+            show-size-picker
+          />
+        </div>
+      </template>
     </div>
 
     <!-- Detail Drawer -->
@@ -510,6 +545,15 @@ onMounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
   min-height: 200px;
+}
+
+.pagination-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
 }
 
 .empty-state {

@@ -153,6 +153,46 @@ pub async fn pick_output_folder(app: AppHandle) -> AppResult<Option<String>> {
     Ok(app.dialog().file().blocking_pick_folder().map(|p| p.to_string()))
 }
 
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"];
+
+fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| AUDIO_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+fn collect_audio_files(dir: &Path, results: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_audio_files(&path, results);
+        } else if is_audio_file(&path) {
+            results.push(path.to_string_lossy().to_string());
+        }
+    }
+}
+
+/// 列出输入路径下的音频文件：传入文件夹则递归扫描，传入文件则直接返回。
+#[tauri::command]
+pub async fn list_audio_files(path: String) -> AppResult<Vec<String>> {
+    let target = Path::new(&path);
+    if target.is_file() {
+        return Ok(if is_audio_file(target) { vec![path] } else { vec![] });
+    }
+    if target.is_dir() {
+        let mut results = Vec::new();
+        collect_audio_files(target, &mut results);
+        results.sort();
+        return Ok(results);
+    }
+    Ok(vec![])
+}
+
 #[tauri::command]
 pub async fn reveal_path(path: String) -> AppResult<()> {
     let target = Path::new(&path);

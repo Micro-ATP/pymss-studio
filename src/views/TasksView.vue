@@ -76,6 +76,16 @@ function handleClearHistory() {
   })
 }
 
+function handleRemoveTask(item: SeparationTask) {
+  dialog.warning({
+    title: t('tasks.removeConfirmTitle'),
+    content: t('tasks.removeConfirmContent'),
+    positiveText: t('tasks.remove'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => task.removeTask(item.id),
+  })
+}
+
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
     queued: t('tasks.statusQueued'),
@@ -188,7 +198,7 @@ onMounted(() => {
       <section class="tasks-section">
         <div class="tasks-section__title">
           <div>
-            <h2>进行中（{{ runningTasks.length }}）</h2>
+            <h2>{{ t('tasks.runningTitle', { count: runningTasks.length }) }}</h2>
             <p>{{ t('tasks.runningDescription') }}</p>
           </div>
         </div>
@@ -268,7 +278,7 @@ onMounted(() => {
                 <template #icon><n-icon :component="FolderOpenOutline" /></template>
                 {{ t('tasks.viewResult') }}
               </n-button>
-              <n-button size="tiny" quaternary @click="task.removeTask(item.id)">
+              <n-button v-if="!isRunning(item.status)" size="tiny" quaternary @click="handleRemoveTask(item)">
                 {{ t('tasks.remove') }}
               </n-button>
             </div>
@@ -285,7 +295,7 @@ onMounted(() => {
       <section class="tasks-section">
         <div class="tasks-section__title">
           <div>
-            <h2>历史任务（{{ historyTasks.length }}）</h2>
+            <h2>{{ t('tasks.historyTitle', { count: historyTasks.length }) }}</h2>
             <p>{{ t('tasks.historyDescription') }}</p>
           </div>
           <n-button text type="primary" @click="historyExpanded = !historyExpanded">
@@ -313,7 +323,7 @@ onMounted(() => {
               <div class="tasks-history-row__actions">
                 <n-button size="tiny" tertiary :disabled="!item.logs.length" @click="openLogs(item)">{{ t('tasks.logs') }}</n-button>
                 <n-button v-if="item.status === 'done'" size="tiny" tertiary @click="jumpToResult(item)">{{ t('tasks.viewResult') }}</n-button>
-                <n-button size="tiny" quaternary @click="task.removeTask(item.id)">{{ t('tasks.remove') }}</n-button>
+                <n-button size="tiny" quaternary @click="handleRemoveTask(item)">{{ t('tasks.remove') }}</n-button>
               </div>
             </div>
           </div>

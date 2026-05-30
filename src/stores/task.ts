@@ -25,6 +25,16 @@ export type SeparationTask = {
 }
 
 const HISTORY_KEY = 'pymss:tasks'
+const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
+
+function isAudioPath(path: string) {
+  const ext = path.split('.').pop()?.toLowerCase() || ''
+  return AUDIO_EXTENSIONS.includes(ext)
+}
+
+function looksLikeFile(path: string) {
+  return /\.[^/\\.]+$/.test(path)
+}
 
 function loadHistory(): SeparationTask[] {
   try {
@@ -115,7 +125,7 @@ export const useTaskStore = defineStore('task', () => {
   const activeTaskId = ref<string | null>(tasks.value[0]?.id || null)
   const focusedResultTaskId = ref<string | null>(null)
   const focusedTaskId = ref<string | null>(null)
-  const inputPath = ref('')
+  const inputFiles = ref<string[]>([])
   const useTta = ref(false)
   const debug = ref(false)
   // Inference params
@@ -131,6 +141,9 @@ export const useTaskStore = defineStore('task', () => {
   const shifts = ref(0)
   const split = ref(true)
   const overlap = ref(0.25)
+
+  // 兼容旧逻辑：inputPath 取候选列表第一个
+  const inputPath = computed(() => inputFiles.value[0] || '')
 
   const activeTask = computed(() => tasks.value.find((task) => task.id === activeTaskId.value) || null)
   const completedTasks = computed(() => tasks.value.filter((task) => task.status === 'done'))
@@ -148,6 +161,18 @@ export const useTaskStore = defineStore('task', () => {
 
   function touch(task: SeparationTask) {
     task.updatedAt = Date.now()
+  }
+
+  function appendTaskLogs(task: SeparationTask, lines: string | string[]) {
+    const values = Array.isArray(lines) ? lines : [lines]
+    const normalized = values
+      .flatMap((line) => String(line || '').split(/\r?\n/))
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+    if (!normalized.length) return
+    task.logs.push(...normalized)
+    task.logs = task.logs.slice(-300)
+    touch(task)
   }
 
   function setTaskStatus(id: string, status: TaskStatus, message?: string, progress?: number) {
@@ -178,16 +203,18 @@ export const useTaskStore = defineStore('task', () => {
       const stage = normalizeStatus(event.payload?.stage)
       setTaskStatus(taskId, stage, event.payload?.message || STAGE_META[stage].label, event.payload?.progress)
     } else if (event.type === 'task_log') {
-      task.logs.push(`${event.payload?.level || 'info'}: ${event.payload?.message || ''}`)
-      task.logs = task.logs.slice(-300)
-      touch(task)
+      appendTaskLogs(task, `${event.payload?.level || 'info'}: ${event.payload?.message || ''}`)
     } else if (event.type === 'error') {
+      const code = event.payload?.code ? `[${event.payload.code}] ` : ''
+      const message = event.payload?.message || 'Unknown error'
+      const detail = event.payload?.detail || ''
       task.status = 'failed'
-      task.error = event.payload?.message || 'Unknown error'
-      task.message = task.error || 'Unknown error'
+      task.error = message
+      task.message = message
       task.stageLabel = STAGE_META.failed.label
       task.progress = 100
-      touch(task)
+      appendTaskLogs(task, [`error: ${code}${message}`, detail ? `traceback:
+${detail}` : ''])
     } else if (event.type === 'task_done') {
       task.status = 'done'
       task.message = 'Done'
@@ -209,14 +236,53 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function pickFiles() {
-    const files = await invoke<string[]>('pick_audio_files')
-    if (files?.[0]) inputPath.value = files[0]
+  // 将一批路径加入候选列表（去重，仅保留音频文件）。返回实际新增数量。
+  function addInputFiles(paths: string[]) {
+    const valid = paths.filter((p) => p?.trim() && isAudioPath(p))
+    if (!valid.length) return 0
+    const existing = new Set(inputFiles.value)
+    const additions = valid.filter((p) => !existing.has(p))
+    if (additions.length) inputFiles.value = [...inputFiles.value, ...additions]
+    return additions.length
   }
 
+  function removeInputFile(path: string) {
+    inputFiles.value = inputFiles.value.filter((p) => p !== path)
+  }
+
+  function clearInputFiles() {
+    inputFiles.value = []
+  }
+
+  // 选择音频文件（多选）：全部加入候选列表，返回选取数量
+  async function pickFiles() {
+    const files = await invoke<string[]>('pick_audio_files')
+    addInputFiles(files || [])
+    return files?.length || 0
+  }
+
+  // 选择输入文件夹：扫描其中音频文件加入候选列表，返回扫描到的数量
   async function pickInputFolder() {
     const folder = await invoke<string | null>('pick_input_folder')
-    if (folder) inputPath.value = folder
+    if (!folder) return 0
+    const files = await invoke<string[]>('list_audio_files', { path: folder })
+    addInputFiles(files || [])
+    return files?.length || 0
+  }
+
+  // 拖拽/外部传入：文件夹会先扫描，文件直接加入。返回新增数量
+  async function addPaths(paths: string[]) {
+    if (!paths?.length) return 0
+    const files: string[] = []
+    for (const p of paths) {
+      if (looksLikeFile(p)) {
+        files.push(p)
+      } else {
+        const scanned = await invoke<string[]>('list_audio_files', { path: p })
+        files.push(...(scanned || []))
+      }
+    }
+    return addInputFiles(files)
   }
 
   async function revealPath(path: string) {
@@ -263,20 +329,32 @@ export const useTaskStore = defineStore('task', () => {
     return cancelled
   }
 
-  async function startSeparation() {
+  // 构建本次推理参数（仅设置非默认值）
+  function buildInferenceParams(): Record<string, unknown> {
+    const inferenceParams: Record<string, unknown> = {}
+    if (batchSize.value > 1) inferenceParams.batch_size = batchSize.value
+    if (overlapSize.value > 0) inferenceParams.overlap_size = overlapSize.value
+    if (chunkSize.value > 0) inferenceParams.chunk_size = chunkSize.value
+    if (!normalize.value) inferenceParams.normalize = false
+    if (maskMode.value) inferenceParams.mask_mode = maskMode.value
+    if (useAmp.value) inferenceParams.use_amp = true
+    if (cudaAttentionBackend.value) inferenceParams.cuda_attention_backend = cudaAttentionBackend.value
+    if (fuseConvBn.value) inferenceParams.fuse_conv_bn = true
+    if (useChannelsLast.value) inferenceParams.use_channels_last = true
+    if (shifts.value > 0) inferenceParams.shifts = shifts.value
+    if (!split.value) inferenceParams.split = false
+    if (overlap.value !== 0.25) inferenceParams.overlap = overlap.value
+    return inferenceParams
+  }
+
+  // 为单个输入文件提交一个分离任务
+  async function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>) {
     const settings = useSettingsStore()
-    const modelStore = useModelStore()
-    if (!inputPath.value.trim()) {
-      throw new Error('Input path is required')
-    }
-    if (!modelStore.selectedModel.trim()) {
-      throw new Error('Model is required')
-    }
-    const id = `sep_${Date.now()}`
+    const id = `sep_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
     const task: SeparationTask = {
       id,
-      model: modelStore.selectedModel,
-      input: inputPath.value,
+      model,
+      input,
       output: resolveTaskOutputPath(settings.outputDir, id, settings.separateTaskOutputDir),
       status: 'queued',
       message: 'Queued',
@@ -291,23 +369,7 @@ export const useTaskStore = defineStore('task', () => {
     tasks.value.unshift(task)
     activeTaskId.value = id
     setTaskStatus(id, 'preparing', 'Preparing task')
-
-    // Build inference params (only set non-default values)
-    const inferenceParams: Record<string, unknown> = {}
-    if (batchSize.value > 1) inferenceParams.batch_size = batchSize.value
-    if (overlapSize.value > 0) inferenceParams.overlap_size = overlapSize.value
-    if (chunkSize.value > 0) inferenceParams.chunk_size = chunkSize.value
-    if (!normalize.value) inferenceParams.normalize = false
-    if (maskMode.value) inferenceParams.mask_mode = maskMode.value
-    if (useAmp.value) inferenceParams.use_amp = true
-    if (cudaAttentionBackend.value) inferenceParams.cuda_attention_backend = cudaAttentionBackend.value
-    if (fuseConvBn.value) inferenceParams.fuse_conv_bn = true
-    if (useChannelsLast.value) inferenceParams.use_channels_last = true
-    if (shifts.value > 0) inferenceParams.shifts = shifts.value
-    if (!split.value) inferenceParams.split = false
-    if (overlap.value !== 0.25) inferenceParams.overlap = overlap.value
     const runtimeDevice = settings.getRuntimeDeviceConfig()
-
     try {
       await invoke<{ taskId: string; started: boolean }>('start_separation', {
         payload: {
@@ -335,9 +397,40 @@ export const useTaskStore = defineStore('task', () => {
       task.message = task.error
       task.stageLabel = STAGE_META.failed.label
       task.progress = 100
-      touch(task)
+      appendTaskLogs(task, `error: ${task.error}`)
       throw err
     }
+  }
+
+  // 批量启动：为候选列表中每个文件创建任务。返回成功/失败计数。
+  async function startSeparation() {
+    const modelStore = useModelStore()
+    if (!inputFiles.value.length) {
+      throw new Error('Input file is required')
+    }
+    if (!modelStore.selectedModel.trim()) {
+      throw new Error('Model is required')
+    }
+    const model = modelStore.selectedModel
+    const inferenceParams = buildInferenceParams()
+    const targets = [...inputFiles.value]
+    let succeeded = 0
+    let failed = 0
+    let lastError: unknown = null
+    for (const input of targets) {
+      try {
+        await submitOne(input, model, inferenceParams)
+        succeeded += 1
+      } catch (err) {
+        failed += 1
+        lastError = err
+      }
+    }
+    // 全部失败时抛出，便于上层提示
+    if (succeeded === 0 && failed > 0) {
+      throw lastError instanceof Error ? lastError : new Error(String(lastError))
+    }
+    return { succeeded, failed, total: targets.length }
   }
 
   async function retryTask(taskId: string) {
@@ -366,7 +459,6 @@ export const useTaskStore = defineStore('task', () => {
     setTaskStatus(id, 'preparing', 'Preparing task')
     try {
       modelStore.selectedModel = existing.model
-      inputPath.value = existing.input
       const runtimeDevice = settings.getRuntimeDeviceConfig()
       await invoke<{ taskId: string; started: boolean }>('start_separation', {
         payload: {
@@ -394,7 +486,7 @@ export const useTaskStore = defineStore('task', () => {
       task.message = task.error
       task.stageLabel = STAGE_META.failed.label
       task.progress = 100
-      touch(task)
+      appendTaskLogs(task, `error: ${task.error}`)
       throw err
     }
   }
@@ -412,6 +504,7 @@ export const useTaskStore = defineStore('task', () => {
     historyTasks,
     focusedResultTaskId,
     focusedTaskId,
+    inputFiles,
     inputPath,
     useTta,
     debug,
@@ -430,6 +523,10 @@ export const useTaskStore = defineStore('task', () => {
     handleWorkerEvent,
     pickFiles,
     pickInputFolder,
+    addPaths,
+    addInputFiles,
+    removeInputFile,
+    clearInputFiles,
     revealPath,
     primaryRevealPath,
     getTaskById,

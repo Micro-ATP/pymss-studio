@@ -14,7 +14,7 @@ import {
 const { t } = useI18n()
 const settings = useSettingsStore()
 const app = useAppStore()
-const { themeMode, locale, modelDir, outputDir, defaultDevice, downloadSource } = storeToRefs(settings)
+const { themeMode, locale, modelDir, defaultDevice, downloadSource } = storeToRefs(settings)
 const deviceOptions = computed(() => settings.deviceOptions(app.envInfo))
 
 onMounted(() => {
@@ -100,15 +100,6 @@ onMounted(() => {
               <div class="flex-center gap-sm mt-sm">
                 <n-input v-model:value="modelDir" :placeholder="t('common.folder')" clearable />
                 <n-button secondary size="small" @click="settings.pickModelDir()">
-                  {{ t('common.browse') }}
-                </n-button>
-              </div>
-            </div>
-            <div>
-              <label class="text-muted text-sm">{{ t('settings.outputDir') }}</label>
-              <div class="flex-center gap-sm mt-sm">
-                <n-input v-model:value="outputDir" :placeholder="t('common.folder')" clearable />
-                <n-button secondary size="small" @click="settings.pickOutputDir()">
                   {{ t('common.browse') }}
                 </n-button>
               </div>

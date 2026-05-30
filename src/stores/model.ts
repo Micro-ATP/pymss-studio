@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -38,6 +38,8 @@ type ModelsPayload = {
   modelDir: string
 }
 
+const MODEL_CACHE_KEY = 'pymss:model_catalog_cache'
+
 type DownloadStatus = 'idle' | 'downloading' | 'done' | 'error'
 type DownloadTask = {
   taskId: string
@@ -48,6 +50,28 @@ type DownloadTask = {
   completedFiles: number
   totalFiles: number
   updatedAt: number
+}
+
+
+function loadModelCache(): Partial<ModelsPayload> | null {
+  try {
+    const raw = localStorage.getItem(MODEL_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<ModelsPayload>
+    return Array.isArray(parsed.models) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function saveModelCache(payload: Partial<ModelsPayload> & { models: ModelEntry[] }) {
+  localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify({
+    models: payload.models,
+    categories: payload.categories || [],
+    categoriesCn: payload.categoriesCn || [],
+    count: payload.count ?? payload.models.length,
+    modelDir: payload.modelDir || '',
+  }))
 }
 
 export const useModelStore = defineStore('model', () => {
@@ -67,6 +91,19 @@ export const useModelStore = defineStore('model', () => {
   const downloadErrors = ref<Record<string, string>>({})
   const downloadTasks = ref<Record<string, DownloadTask>>({})
   const downloadTaskIndex = ref<Record<string, string>>({})
+  const cached = loadModelCache()
+  if (cached?.models?.length) {
+    models.value = cached.models as ModelEntry[]
+    categories.value = cached.categories || []
+    categoriesCn.value = cached.categoriesCn || []
+    modelDir.value = cached.modelDir || ''
+  }
+
+  watch(supportedOnly, () => {
+    if (selectedInfo.value && !filteredModels.value.some((item) => item.name === selectedInfo.value?.name)) {
+      selectedInfo.value = null
+    }
+  })
 
   const filteredModels = computed(() => {
     const q = search.value.trim().toLowerCase()
@@ -78,16 +115,32 @@ export const useModelStore = defineStore('model', () => {
         || model.targetStem.toLowerCase().includes(q)
         || model.category.toLowerCase().includes(q)
         || model.categoryCn.toLowerCase().includes(q)
-      const matchesCategory = !category.value || model.category === category.value
-      return matchesQuery && matchesCategory
+      const selectedCategory = category.value.trim().toLowerCase()
+      const matchesCategory = !selectedCategory
+        || model.category.toLowerCase() === selectedCategory
+        || model.primaryCategory.toLowerCase() === selectedCategory
+        || model.secondaryCategory.toLowerCase() === selectedCategory
+      const matchesSupported = !supportedOnly.value || model.supported
+      return matchesQuery && matchesCategory && matchesSupported
     })
   })
   const downloadedModels = computed(() => models.value.filter((model) => model.supported && model.downloaded))
+
+  function persistModelCache() {
+    saveModelCache({
+      models: models.value,
+      categories: categories.value,
+      categoriesCn: categoriesCn.value,
+      count: models.value.length,
+      modelDir: modelDir.value,
+    })
+  }
 
   function upsertModel(modelInfo: ModelEntry) {
     const index = models.value.findIndex((item) => item.name === modelInfo.name)
     if (index >= 0) models.value[index] = modelInfo
     if (selectedModel.value === modelInfo.name) selectedInfo.value = modelInfo
+    persistModelCache()
   }
 
   async function loadModels() {
@@ -98,7 +151,7 @@ export const useModelStore = defineStore('model', () => {
       const result = await invoke<ModelsPayload>('list_models', {
         payload: {
           category: null,
-          supportedOnly: supportedOnly.value,
+          supportedOnly: false,
           includeLocalState: true,
           modelDir: settings.modelDir || null,
         },
@@ -107,6 +160,7 @@ export const useModelStore = defineStore('model', () => {
       categories.value = result.categories
       categoriesCn.value = result.categoriesCn
       modelDir.value = result.modelDir
+      saveModelCache(result)
       const firstDownloaded = models.value.find((model) => model.supported && model.downloaded)
       if (!models.value.some((model) => model.name === selectedModel.value && model.downloaded)) {
         selectedModel.value = firstDownloaded?.name || ''
@@ -274,6 +328,7 @@ export const useModelStore = defineStore('model', () => {
       if (selectedInfo.value?.name === name) {
         selectedInfo.value = { ...selectedInfo.value, downloaded: false }
       }
+      persistModelCache()
     }
     // Clean up download task if any
     if (downloadTasks.value[name]) {
